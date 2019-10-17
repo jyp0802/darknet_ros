@@ -135,9 +135,9 @@ void YoloObjectDetector::init()
   std::string boundingBoxesTopicName;
   int boundingBoxesQueueSize;
   bool boundingBoxesLatch;
-  std::string detectionImageTopicName;
-  int detectionImageQueueSize;
-  bool detectionImageLatch;
+  std::string originalImageTopicName;
+  int originalImageQueueSize;
+  bool originalImageLatch;
 
   nodeHandle_.param("subscribers/camera_reading/topic", cameraTopicName,
                     std::string("/camera/image_raw"));
@@ -150,10 +150,10 @@ void YoloObjectDetector::init()
                     std::string("bounding_boxes"));
   nodeHandle_.param("publishers/bounding_boxes/queue_size", boundingBoxesQueueSize, 1);
   nodeHandle_.param("publishers/bounding_boxes/latch", boundingBoxesLatch, false);
-  nodeHandle_.param("publishers/detection_image/topic", detectionImageTopicName,
-                    std::string("detection_image"));
-  nodeHandle_.param("publishers/detection_image/queue_size", detectionImageQueueSize, 1);
-  nodeHandle_.param("publishers/detection_image/latch", detectionImageLatch, true);
+  nodeHandle_.param("publishers/original_image/topic", originalImageTopicName,
+                    std::string("original_image"));
+  nodeHandle_.param("publishers/original_image/queue_size", originalImageQueueSize, 1);
+  nodeHandle_.param("publishers/original_image/latch", originalImageLatch, true);
 
   imageSubscriber_ = imageTransport_.subscribe(cameraTopicName, cameraQueueSize,
                                                &YoloObjectDetector::cameraCallback, this);
@@ -162,9 +162,9 @@ void YoloObjectDetector::init()
                                                            objectDetectorLatch);
   boundingBoxesPublisher_ = nodeHandle_.advertise<darknet_ros_msgs::BoundingBoxes>(
       boundingBoxesTopicName, boundingBoxesQueueSize, boundingBoxesLatch);
-  detectionImagePublisher_ = nodeHandle_.advertise<sensor_msgs::Image>(detectionImageTopicName,
-                                                                       detectionImageQueueSize,
-                                                                       detectionImageLatch);
+  originalImagePublisher_ = nodeHandle_.advertise<sensor_msgs::Image>(originalImageTopicName,
+                                                                       originalImageQueueSize,
+                                                                       originalImageLatch);
 
   // Action servers.
   std::string checkForObjectsActionName;
@@ -256,17 +256,17 @@ bool YoloObjectDetector::isCheckingForObjects() const
       && !checkForObjectsActionServer_->isPreemptRequested());
 }
 
-bool YoloObjectDetector::publishDetectionImage(const cv::Mat& detectionImage)
+bool YoloObjectDetector::publishOriginalImage(const cv::Mat& originalImage)
 {
-  if (detectionImagePublisher_.getNumSubscribers() < 1)
+  if (originalImagePublisher_.getNumSubscribers() < 1)
     return false;
-  cv_bridge::CvImage cvImage;
-  cvImage.header.stamp = ros::Time::now();
-  cvImage.header.frame_id = "detection_image";
-  cvImage.encoding = sensor_msgs::image_encodings::BGR8;
-  cvImage.image = detectionImage;
-  detectionImagePublisher_.publish(*cvImage.toImageMsg());
-  ROS_DEBUG("Detection image has been published.");
+  cv_bridge::CvImage cvOriginalImage;
+  cvOriginalImage.header.stamp = headerBuff_[(buffIndex_+1) % 3].stamp;
+  cvOriginalImage.header.frame_id = "original_image";
+  cvOriginalImage.encoding = sensor_msgs::image_encodings::BGR8;
+  cvOriginalImage.image = originalImage;
+  originalImagePublisher_.publish(*cvOriginalImage.toImageMsg());
+  ROS_DEBUG("Orignial image has been published.");
   return true;
 }
 
@@ -411,6 +411,7 @@ void *YoloObjectDetector::fetchInThread()
     IplImageWithHeader_ imageAndHeader = getIplImageWithHeader();
     IplImage* ROS_img = imageAndHeader.image;
     ipl_into_image(ROS_img, buff_[buffIndex_]);
+    orig_buff_[buffIndex_] = camImageCopy_.clone();
     headerBuff_[buffIndex_] = imageAndHeader.header;
     buffId_[buffIndex_] = actionId_;
   }
@@ -485,7 +486,7 @@ void YoloObjectDetector::yolo()
     }
     std::this_thread::sleep_for(wait_duration);
   }
-
+  printf("Started YOLO.\n");
   std::thread detect_thread;
   std::thread fetch_thread;
 
@@ -507,10 +508,13 @@ void YoloObjectDetector::yolo()
     IplImageWithHeader_ imageAndHeader = getIplImageWithHeader();
     IplImage* ROS_img = imageAndHeader.image;
     buff_[0] = ipl_to_image(ROS_img);
+    orig_buff_[0] = camImageCopy_.clone();
     headerBuff_[0] = imageAndHeader.header;
   }
   buff_[1] = copy_image(buff_[0]);
   buff_[2] = copy_image(buff_[0]);
+  orig_buff_[1] = orig_buff_[0].clone();
+  orig_buff_[2] = orig_buff_[0].clone();
   headerBuff_[1] = headerBuff_[0];
   headerBuff_[2] = headerBuff_[0];
   buffLetter_[0] = letterbox_image(buff_[0], net_->w, net_->h);
@@ -582,14 +586,14 @@ bool YoloObjectDetector::isNodeRunning(void)
 void *YoloObjectDetector::publishInThread()
 {
   // Publish image.
-  cv::Mat cvImage = cv::cvarrToMat(ipl_);
-  if (!publishDetectionImage(cv::Mat(cvImage))) {
-    ROS_DEBUG("Detection image has not been broadcasted.");
+  cv::Mat cvOrigImage = orig_buff_[(buffIndex_ + 1)%3];
+  if (!publishOriginalImage(cv::Mat(cvOrigImage))) {
+    ROS_DEBUG("Original image has not been broadcasted.");
   }
 
   // Publish bounding boxes and detection result.
   int num = roiBoxes_[0].num;
-  if (num > 0 && num <= 100) {
+  if (num <= 100) {
     for (int i = 0; i < num; i++) {
       for (int j = 0; j < numClasses_; j++) {
         if (roiBoxes_[i].Class == j) {
@@ -623,9 +627,10 @@ void *YoloObjectDetector::publishInThread()
         }
       }
     }
-    boundingBoxesResults_.header.stamp = ros::Time::now();
-    boundingBoxesResults_.header.frame_id = "detection";
     boundingBoxesResults_.image_header = headerBuff_[(buffIndex_ + 1) % 3];
+    boundingBoxesResults_.header.stamp = boundingBoxesResults_.image_header.stamp;
+    boundingBoxesResults_.header.frame_id = "detection";
+    // boundingBoxesResults_.image_header = headerBuff_[(buffIndex_ + 1) % 3];
     boundingBoxesPublisher_.publish(boundingBoxesResults_);
   } else {
     std_msgs::Int8 msg;
