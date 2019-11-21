@@ -68,6 +68,16 @@ bool YoloObjectDetector::readParameters()
     viewImage_ = false;
   }
 
+  // Check for class filters
+  if (nodeHandle_.hasParam("yolo_model/filter_classes/names"))
+    nodeHandle_.param("yolo_model/filter_classes/names", classFilters_,
+                    std::vector<int>(0));
+  else
+  {
+    for( int i = 0; i <= numClasses_; i++ )
+      classFilters_.push_back(i);
+  }
+
   // Set vector sizes.
   nodeHandle_.param("yolo_model/detection_classes/names", classLabels_,
                     std::vector<std::string>(0));
@@ -607,7 +617,8 @@ void *YoloObjectDetector::publishInThread()
     msg.data = num;
     objectPublisher_.publish(msg);
 
-    for (int i = 0; i < numClasses_; i++) {
+    // for (int i = 0; i < numClasses_; i++) {
+    for (auto&& i: classFilters_) {
       if (rosBoxCounter_[i] > 0) {
         darknet_ros_msgs::BoundingBox boundingBox;
 

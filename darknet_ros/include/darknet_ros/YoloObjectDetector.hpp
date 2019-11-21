@@ -164,6 +164,9 @@ class YoloObjectDetector
   ros::Publisher originalImagePublisher_;
   cv::Mat orig_buff_[3];
 
+  //! Filtering classes to publish
+  std::vector<int> classFilters_;  
+
   // Yolo running on thread.
   std::thread yoloThread_;
 
