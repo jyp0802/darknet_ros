@@ -9,6 +9,8 @@
   <author email="marko.bjelonic@mavt.ethz.ch">Marko Bjelonic</author>
 
   <buildtool_depend>catkin</buildtool_depend>
+  <buildtool_depend>message_generation</buildtool_depend>
+  <build_depend>geometry_msgs</build_depend>
   <depend>boost</depend>
 
   <depend>roscpp</depend>

@@ -135,6 +135,8 @@ class YoloObjectDetector
 
   //! ROS node handle.
   ros::NodeHandle nodeHandle_;
+  
+  ros::ServiceClient classify_service_;
 
   //! Class labels.
   int numClasses_;

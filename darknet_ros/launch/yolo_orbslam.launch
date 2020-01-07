@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 
 <launch>
+  <!-- Run Classifier Service -->
+  <node pkg="darknet_ros" type="book_classifier_service.py" name="book_classifier_service" output="screen"/>
   
   <!-- Use YOLOv3 -->
   <arg name="network_param_file" default="$(find darknet_ros)/config/yolov3.yaml"/>

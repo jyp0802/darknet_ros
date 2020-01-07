@@ -8,6 +8,8 @@
 
 // yolo object detector
 #include "darknet_ros/YoloObjectDetector.hpp"
+#include <darknet_ros/ClassifyImage.h>
+#include <cmath>
 
 // Check for xServer
 #include <X11/Xlib.h>
@@ -187,6 +189,8 @@ void YoloObjectDetector::init()
   checkForObjectsActionServer_->registerPreemptCallback(
       boost::bind(&YoloObjectDetector::checkForObjectsActionPreemptCB, this));
   checkForObjectsActionServer_->start();
+
+  classify_service_ = nodeHandle_.serviceClient<darknet_ros::ClassifyImage>("book_classifier");
 }
 
 void YoloObjectDetector::cameraCallback(const sensor_msgs::ImageConstPtr& msg)
@@ -593,6 +597,73 @@ bool YoloObjectDetector::isNodeRunning(void)
   return isNodeRunning_;
 }
 
+bool compareSize(RosBox_ b1, RosBox_ b2) 
+{
+  return b1.w*b1.h > b2.w*b2.h;
+}
+
+bool isIn(RosBox_ b1, RosBox_ b2)
+{
+  // float minx1 = b1.x-b1.w/2;
+  // float miny1 = b1.y-b1.h/2;
+  // float maxx1 = b1.x+b1.w/2;
+  // float maxy1 = b1.y+b1.h/2;
+  // float w1 = maxx1 - minx1;
+  // float h1 = maxy1 - miny1;
+  // float minx2 = b2.x-b2.w/2;
+  // float miny2 = b2.y-b2.h/2;
+  // float maxx2 = b2.x+b2.w/2;
+  // float maxy2 = b2.y+b2.h/2;
+  // float w2 = maxx2 - minx2;
+  // float h2 = maxy2 - miny2;
+  return b1.x-b1.w/2 < b2.x && b1.y-b1.h/2 < b2.y && b1.x+b1.w/2 > b2.x && b1.y+b1.h/2 > b2.y;
+}
+
+bool xyOrder(RosBox_ b1, RosBox_ b2) 
+{
+  return b1.x*640 + (((int)(b1.y*480))/20)*640 < b2.x*640 + (((int)(b2.y*480))/20)*640;
+}
+
+bool isNear(RosBox_ b1, RosBox_ b2)
+{
+  float minx1 = b1.x-b1.w/2;
+  float miny1 = b1.y-b1.h/2;
+  float maxx1 = b1.x+b1.w/2;
+  float maxy1 = b1.y+b1.h/2;
+  float minx2 = b2.x-b2.w/2;
+  float miny2 = b2.y-b2.h/2;
+  float maxx2 = b2.x+b2.w/2;
+  float maxy2 = b2.y+b2.h/2;
+  // std::cout << "     " << miny1 << ", " << miny2 << ", " << std::abs(miny1-miny2) << ", " << maxx1 << ", " << minx2 << ", " << std::abs(maxx1-minx2) << ", " << minx1 << ", " << (minx1 < minx2 < maxx1) << "\n";
+  return (std::abs(miny1-miny2) < 0.05 && (std::abs(maxx1-minx2) < 0.05 || (minx1 < minx2 && minx2 < maxx1)));
+  // return (abs(miny1-miny2) < 0.05 && abs(maxx1-minx2) < 0.05) || (abs(maxy1-miny2) < 0.05 && abs(minx1-minx2) < 0.05);
+}
+
+RosBox_ newBox(RosBox_ b1, RosBox_ b2)
+{
+  RosBox_ nb;
+  float minx1 = b1.x-b1.w/2;
+  float miny1 = b1.y-b1.h/2;
+  float maxx1 = b1.x+b1.w/2;
+  float maxy1 = b1.y+b1.h/2;
+  float minx2 = b2.x-b2.w/2;
+  float miny2 = b2.y-b2.h/2;
+  float maxx2 = b2.x+b2.w/2;
+  float maxy2 = b2.y+b2.h/2;
+  float minx3 = std::min(minx1,minx2);
+  float miny3 = std::min(miny1,miny2);
+  float maxx3 = std::max(maxx1,maxx2);
+  float maxy3 = std::max(maxy1,maxy2);
+  nb.x = (minx3+maxx3)/2;
+  nb.y = (miny3+maxy3)/2;
+  nb.w = maxx3-minx3;
+  nb.h = maxy3-miny3;
+  nb.prob = b1.prob;
+  nb.num = b1.num;
+  nb.Class = b1.Class;
+  return nb;
+}
+
 void *YoloObjectDetector::publishInThread()
 {
   // Publish image.
@@ -622,20 +693,155 @@ void *YoloObjectDetector::publishInThread()
       if (rosBoxCounter_[i] > 0) {
         darknet_ros_msgs::BoundingBox boundingBox;
 
-        for (int j = 0; j < rosBoxCounter_[i]; j++) {
-          int xmin = (rosBoxes_[i][j].x - rosBoxes_[i][j].w / 2) * frameWidth_;
-          int ymin = (rosBoxes_[i][j].y - rosBoxes_[i][j].h / 2) * frameHeight_;
-          int xmax = (rosBoxes_[i][j].x + rosBoxes_[i][j].w / 2) * frameWidth_;
-          int ymax = (rosBoxes_[i][j].y + rosBoxes_[i][j].h / 2) * frameHeight_;
+        if (i == 73)
+        {
+          // std::cout << "********************************************************\n";
+          std::vector<RosBox_> boxes = rosBoxes_[i];
+          sort(boxes.begin(), boxes.end(), compareSize);
+          int total_n = rosBoxCounter_[i];
+          if (total_n > 5)
+          {
+            // std::cout << "                       " << "More than 5" << "\n";
+            // med = boxes[total_n/2];
+            // if (med.w*med.h
+            int large = 2;
+            std::vector<int> top_boxes(large, 0);
+            // IGNORE small boxes that belong to big boxes
+            // for (int b = total_n - 1; b >= large; b--) {
+            //   for (int l = 0; l < large; l++) {
+            //     if (isIn(boxes[l], boxes[b]))
+            //       boxes.erase(boxes.begin() + b);
+                  // std::cout << "                       " << "Removed " << b << "\n";
+            //   }
+            // }
 
-          boundingBox.Class = classLabels_[i];
-          boundingBox.id = i;
-          boundingBox.probability = rosBoxes_[i][j].prob;
-          boundingBox.xmin = xmin;
-          boundingBox.ymin = ymin;
-          boundingBox.xmax = xmax;
-          boundingBox.ymax = ymax;
-          boundingBoxesResults_.bounding_boxes.push_back(boundingBox);
+            // IGNORE big boxes that are filled with small boxes
+            for (int b = large; b < total_n; b++) {
+              for (int l = 0; l < large; l++) {
+                if (isIn(boxes[l], boxes[b]))
+                  top_boxes[l] += 1;
+              }
+            }
+            for (int l = large-1; l >= 0; l--) {
+              if (top_boxes[l] > 3)
+              {
+                boxes.erase(boxes.begin() + l);
+                // std::cout << "                       " << "Removed " << l << "  " << top_boxes[l] << "\n";
+              }
+              // std::cout << "                       " << "Count is " << top_boxes[0] << " and " << top_boxes[1] << "\n";
+            }
+            sort(boxes.begin(), boxes.end(), xyOrder);
+            std::vector<RosBox_> new_boxes;
+            RosBox_ temp = boxes[0];
+            for (int j = 1; j < boxes.size(); j++) {
+              // std::cout << boxes[j].x*640 << ", " << boxes[j].y*480 << "\n";
+              // std::cout << temp.x-temp.w/2 << ", " << temp.y-temp.h/2 << ", " << temp.w << ", " << temp.h << " + ";
+              // std::cout << boxes[j].x-boxes[j].w/2 << ", " << boxes[j].y-boxes[j].h/2 << ", " << boxes[j].w << ", " << boxes[j].h << " ";
+              if (isNear(temp, boxes[j]))
+              {
+                // std::cout << "O ";
+                temp = newBox(temp, boxes[j]);
+                // std::cout << temp.x-temp.w/2 << ", " << temp.y-temp.h/2 << ", " << temp.w << ", " << temp.h << "\n";
+              }
+              else
+              {
+                // std::cout << "X ";
+                new_boxes.push_back(temp);
+                temp = boxes[j];
+                // std::cout << temp.x-temp.w/2 << ", " << temp.y-temp.h/2 << ", " << temp.w << ", " << temp.h << "\n";
+              }
+            }
+            new_boxes.push_back(temp);
+            // std::cout << "Done\n";
+            // std::cout << boxes.size() << "     ";
+            boxes = new_boxes;
+            // std::cout << boxes.size() << "\n";
+            // exit(-1);
+          }
+          // cv_bridge::CvImage img_bridge;
+          // sensor_msgs::Image img_msg; // >> message to be sent
+          // std_msgs::Header header; // empty header
+          // header.seq = 0; // user defined counter
+          // header.stamp = ros::Time::now(); // time
+          // img_bridge = cv_bridge::CvImage(header, sensor_msgs::image_encodings::RGB8, cvOrigImage);
+          // img_bridge.toImageMsg(img_msg); // from cv_bridge to sensor_msgs::Image
+
+          // darknet_ros::ClassifyImage srv;
+          // srv.request.input = img_msg;
+          // classify_service_.call(srv);
+
+          for (int j = 0; j < boxes.size(); j++) {
+            int xmin = (boxes[j].x - boxes[j].w / 2) * frameWidth_;
+            int ymin = (boxes[j].y - boxes[j].h / 2) * frameHeight_;
+            int xmax = (boxes[j].x + boxes[j].w / 2) * frameWidth_;
+            int ymax = (boxes[j].y + boxes[j].h / 2) * frameHeight_;
+            int width = xmax - xmin;
+            int height = ymax - ymin;
+            int area = width * height;
+
+            if (area < 1000)
+            {
+              // std::cout << "                       " << "Ignore because too small " << area << " " << j << "\n";
+              continue;
+            }
+            // if (width > 400)
+            // {
+            //   std::cout << "                       " << "Ignore because too wide " << width << "\n";
+            //   continue;
+            // }
+
+            cv::Rect mask(xmin, ymin, width, height);
+            cv::Mat img = cvOrigImage(mask); // << image MUST be contained here
+            cv_bridge::CvImage img_bridge;
+            sensor_msgs::Image img_msg; // >> message to be sent
+            std_msgs::Header header; // empty header
+            header.seq = 1; // user defined counter
+            header.stamp = ros::Time::now(); // time
+            img_bridge = cv_bridge::CvImage(header, sensor_msgs::image_encodings::RGB8, img);
+            img_bridge.toImageMsg(img_msg); // from cv_bridge to sensor_msgs::Image
+
+            darknet_ros::ClassifyImage srv;
+            srv.request.input = img_msg;
+            bool classify_result = false;
+            if (classify_service_.call(srv))
+              classify_result = srv.response.output;
+            else
+              ROS_ERROR("Failed to call classifier service");
+
+            if (classify_result)
+            {
+              // std::cout << "                       " << "Ignore because classified " << j << "\n";
+              continue;
+            }
+
+            boundingBox.Class = classLabels_[i];
+            boundingBox.id = i;
+            boundingBox.probability = rosBoxes_[i][j].prob;
+            boundingBox.xmin = xmin;
+            boundingBox.ymin = ymin;
+            boundingBox.xmax = xmax;
+            boundingBox.ymax = ymax;
+            boundingBoxesResults_.bounding_boxes.push_back(boundingBox);
+          }
+        }
+
+        else
+        {
+          for (int j = 0; j < rosBoxCounter_[i]; j++) {
+            int xmin = (rosBoxes_[i][j].x - rosBoxes_[i][j].w / 2) * frameWidth_;
+            int ymin = (rosBoxes_[i][j].y - rosBoxes_[i][j].h / 2) * frameHeight_;
+            int xmax = (rosBoxes_[i][j].x + rosBoxes_[i][j].w / 2) * frameWidth_;
+            int ymax = (rosBoxes_[i][j].y + rosBoxes_[i][j].h / 2) * frameHeight_;
+
+            boundingBox.Class = classLabels_[i];
+            boundingBox.id = i;
+            boundingBox.probability = rosBoxes_[i][j].prob;
+            boundingBox.xmin = xmin;
+            boundingBox.ymin = ymin;
+            boundingBox.xmax = xmax;
+            boundingBox.ymax = ymax;
+            boundingBoxesResults_.bounding_boxes.push_back(boundingBox);
+          }
         }
       }
     }
