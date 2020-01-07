@@ -16,7 +16,7 @@ add_definitions(-DDARKNET_FILE_PATH="${DARKNET_PATH}")
 find_package(CUDA QUIET)
 if (CUDA_FOUND)
   find_package(CUDA REQUIRED)
-  message(STATUS "CUDA Version: ${CUDA_VERSION_STRINGS}")
+  message(STATUS "CUDA Version: ${CUDA_VERSION_STRING}")
   message(STATUS "CUDA Libararies: ${CUDA_LIBRARIES}")
   set(
     CUDA_NVCC_FLAGS
@@ -57,11 +57,25 @@ find_package(catkin REQUIRED
     actionlib
     darknet_ros_msgs
     image_transport
+    message_generation
+    message_filters
 )
 
 # Enable OPENCV in darknet
 add_definitions(-DOPENCV)
 add_definitions(-O4 -g)
+
+## Generate services in the 'srv' folder
+add_service_files(
+  FILES
+  ClassifyImage.srv
+)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs  # Or other packages containing msgs
+  sensor_msgs
+)
 
 catkin_package(
   INCLUDE_DIRS
@@ -79,6 +93,11 @@ catkin_package(
   DEPENDS
     Boost
 )
+
+catkin_install_python(
+  PROGRAMS
+  scripts/book_classifier_service.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 include_directories(
   ${DARKNET_PATH}/src
