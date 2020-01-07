@@ -9,7 +9,13 @@ yolo_model:
   filter_classes:
     names:
       - 0
+      - 1
+      - 2
+      - 3
+      - 5
+      - 7
       - 56
+      - 73
   detection_classes:
     names:
       - person
